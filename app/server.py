@@ -1,6 +1,6 @@
 # app/server.py
 import mlflow
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List
 
@@ -12,6 +12,15 @@ MODEL_VERSION       = "1"
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 MODEL_URI = f"models:/{MODEL_NAME}/{MODEL_VERSION}"
 model = mlflow.pyfunc.load_model(MODEL_URI)
+
+# ---- Runtime-served version state (minimal additions) ----
+CURRENT_SERVED_VERSION = MODEL_VERSION  # track which version is currently served
+
+def _load_model_for_version(version: str):
+    """Load a model version from MLflow Model Registry."""
+    uri = f"models:/{MODEL_NAME}/{version}"
+    return mlflow.pyfunc.load_model(uri)
+
 
 # ----- Pydantic schemas with helpful docs + examples -----
 class IrisSample(BaseModel):
@@ -79,3 +88,26 @@ def predict(req: PredictRequest) -> PredictResponse:
 # TODO Add endpoint to get the current model serving version
 # TODO Add endpoint to update the serving version
 # TODO Predict using the correct served version
+
+from pydantic import BaseModel
+
+class SelectVersionRequest(BaseModel):
+    version: str
+
+@app.get("/model/version")
+def get_model_version():
+    """Return the currently served model version."""
+    return {"model_name": MODEL_NAME, "version": CURRENT_SERVED_VERSION}
+
+@app.post("/model/version")
+def set_model_version(req: SelectVersionRequest):
+    """Switch the served model to a specific version (registered in MLflow)."""
+    global model, CURRENT_SERVED_VERSION
+    try:
+        loaded = _load_model_for_version(req.version)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Could not load version '{req.version}': {e}")
+    model = loaded
+    CURRENT_SERVED_VERSION = req.version
+    return {"model_name": MODEL_NAME, "version": CURRENT_SERVED_VERSION}
+
